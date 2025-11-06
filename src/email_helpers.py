@@ -1,4 +1,3 @@
-from __future__ import annotations
 from typing import List, Dict, Any
 import os
 import pandas as pd
@@ -63,35 +62,6 @@ def fetch_emails(service: Resource, max_results: int = 100) -> List[Dict[str, An
     return results.get("messages", [])
 
 
-def classify_email(subject: str, sender: str) -> str:
-    """
-    Categorize an email based on subject keyword matching.
-
-    This lightweight rule-based classifier determines whether the email
-    appears to be promotional, important, or requires manual review.
-
-    Args:
-        subject (str): The email subject line.
-        sender (str): The full sender address (unused but available
-            for future enhancements).
-
-    Returns:
-        str: One of:
-            - `"DELETE"` for promotional / unwanted emails
-            - `"KEEP"` for important / critical messages
-            - `"REVIEW"` for ambiguous cases needing human decision
-    """
-    delete_keywords = ["unsubscribe", "promo", "sale", "offer", "newsletter"]
-    keep_keywords = ["invoice", "bank", "tax", "contract", "family"]
-
-    subject_lower = subject.lower()
-    if any(word in subject_lower for word in delete_keywords):
-        return "DELETE"
-    if any(word in subject_lower for word in keep_keywords):
-        return "KEEP"
-    return "REVIEW"
-
-
 def export_emails(service: Resource, emails: List[Dict[str, Any]], filename: str = "emails_review.csv") -> None:
     """
     Fetch email metadata and create a labeled dataset for manual review.
@@ -117,13 +87,11 @@ def export_emails(service: Resource, emails: List[Dict[str, Any]], filename: str
 
         subject = headers.get("Subject", "")
         sender = headers.get("From", "")
-        decision = classify_email(subject, sender)
 
         email_data.append({
             "Message_ID": e["id"],
             "Subject": subject,
-            "Sender": sender,
-            "Decision": decision
+            "Sender": sender
         })
 
     df = pd.DataFrame(email_data)
@@ -155,9 +123,8 @@ def delete_emails_from_csv(service: Resource, df: pd.DataFrame) -> None:
 
         if pd.isna(msg_id):
             continue
-
         try:
-            service.users().messages().delete(userId="me", id=msg_id).execute()
+            service.users().messages().trash(userId="me", id=msg_id).execute()
             print(f"Deleted email: {row['Subject']} from {row['Sender']}")
         except Exception as e:
             print(f"Error deleting {row['Subject']}: {e}")

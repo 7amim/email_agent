@@ -63,3 +63,13 @@ Use the Jupyter notebook `email_filter_agent_test.ipynb` to export emails, run t
 
 **Existing CSV with self-emails:** To drop rows you sent from an already-exported CSV:  
 `df = df[~df["sender"].str.contains("your.email@gmail.com", case=False, na=False)]` then save.
+
+### Email review UI
+
+A NiceGUI web app lets you view emails, filter by confidence/decision/important, search subject/sender, and edit classification (important, reason, confidence, decision, notes) with changes saved to the CSV.
+
+1. Install dependencies: `pip install -r requirements.txt` (includes NiceGUI).
+2. Run: `python app.py`
+3. Open the URL shown in the terminal (e.g. http://localhost:8080). Use **Refresh** to reload from disk.
+
+The app reads **`data/classified_emails.csv`**. If that file does not exist, it loads **`data/emails_review.csv`** and, on first save, writes **`data/classified_emails.csv`** so it stays in sync with the pipeline and notebook.

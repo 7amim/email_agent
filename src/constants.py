@@ -1,4 +1,15 @@
+import os
+
 DEFAULT_LLM = "Meta-Llama-3.1-8B-Instruct-128k-Q4_0.gguf"
+
+# Folder for exported and generated CSVs and checkpoints (kept out of repo root).
+DATA_DIR = "data"
+
+
+def data_path(*parts: str) -> str:
+    """Return a path under DATA_DIR and ensure the directory exists."""
+    os.makedirs(DATA_DIR, exist_ok=True)
+    return os.path.join(DATA_DIR, *parts)
 
 REGEX_PATTERN = (
         r"IMPORTANT\s*:\s*(?P<important>[^\n]+)\s*"

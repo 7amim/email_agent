@@ -3,3 +3,6 @@
 credentials.json
 token.json
 *.pyc
+
+# Exported and generated CSVs/checkpoints (stored under data/)
+data/

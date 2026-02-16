@@ -8,7 +8,7 @@ from google.oauth2.credentials import Credentials
 from google_auth_oauthlib.flow import InstalledAppFlow
 from google.auth.transport.requests import Request
 
-from src.constants import REVIEW_CSV_COLUMNS
+from src.constants import REVIEW_CSV_COLUMNS, data_path
 
 SCOPES = ["https://www.googleapis.com/auth/gmail.modify"]
 
@@ -215,7 +215,7 @@ def _format_sent_timestamp(
 def export_emails(
     service: Resource,
     emails: Iterable[Union[Dict[str, Any], str]],
-    filename: str = "emails_review.csv",
+    filename: Optional[str] = None,
     append: bool = False,
     include_review_columns: bool = True,
     exclude_sender_emails: Optional[List[str]] = None,
@@ -239,6 +239,8 @@ def export_emails(
     Returns:
         int: Number of rows written to the CSV.
     """
+    if filename is None:
+        filename = data_path("emails_review.csv")
     email_data: List[Dict[str, Any]] = []
     message_ids = _normalize_message_ids(emails)
     exclude_lower = [e.strip().lower() for e in (exclude_sender_emails or []) if e]
@@ -285,11 +287,11 @@ def _get_user_email(service: Resource) -> Optional[str]:
 
 def export_emails_paginated(
     service: Resource,
-    filename: str = "emails_review.csv",
+    filename: Optional[str] = None,
     query: Optional[str] = None,
     total_limit: Optional[int] = None,
     page_size: int = 500,
-    checkpoint_path: str = "export_checkpoint.json",
+    checkpoint_path: Optional[str] = None,
     resume: bool = True,
     inbox_only: bool = True,
     exclude_self: bool = True,
@@ -298,8 +300,12 @@ def export_emails_paginated(
     Export emails to CSV using Gmail pagination with checkpoint/resume support.
 
     By default only inbox messages are exported (no Sent/Drafts/etc.) and emails
-    from yourself are excluded.
+    from yourself are excluded. Exports and checkpoints are stored under the data/ folder.
     """
+    if filename is None:
+        filename = data_path("emails_review.csv")
+    if checkpoint_path is None:
+        checkpoint_path = data_path("export_checkpoint.json")
     if inbox_only:
         base = (query or "").strip()
         query = f"in:inbox {base}".strip() if base else "in:inbox"

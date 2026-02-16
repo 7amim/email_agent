@@ -5,7 +5,7 @@ from typing import Optional, Dict, Any, List
 import pandas as pd
 
 from src.agent.email_agent import EmailAgent
-from src.constants import REVIEW_CSV_COLUMNS, CONFIDENCE_RANK
+from src.constants import REVIEW_CSV_COLUMNS, CONFIDENCE_RANK, data_path
 
 PROMO_SUBJECT_KEYWORDS = [
     "newsletter",
@@ -30,6 +30,9 @@ def _ensure_review_columns(df: pd.DataFrame) -> pd.DataFrame:
 
 
 def _append_dataframe_to_csv(df: pd.DataFrame, filename: str) -> None:
+    dirname = os.path.dirname(filename)
+    if dirname:
+        os.makedirs(dirname, exist_ok=True)
     file_exists = os.path.exists(filename)
     df.to_csv(filename, index=False, mode="a" if file_exists else "w", header=not file_exists)
 
@@ -44,6 +47,9 @@ def _load_checkpoint(checkpoint_path: str) -> Dict[str, Any]:
 def _save_checkpoint(checkpoint_path: str, payload: Dict[str, Any]) -> None:
     if not checkpoint_path:
         return
+    dirname = os.path.dirname(checkpoint_path)
+    if dirname:
+        os.makedirs(dirname, exist_ok=True)
     with open(checkpoint_path, "w") as handle:
         json.dump(payload, handle, indent=2)
 
@@ -84,17 +90,24 @@ def _add_suggested_decision(df: pd.DataFrame) -> pd.DataFrame:
 
 async def classify_csv_in_batches(
     agent: EmailAgent,
-    input_csv: str,
-    output_csv: str = "classified_emails.csv",
+    input_csv: Optional[str] = None,
+    output_csv: Optional[str] = None,
     batch_size: int = 200,
-    checkpoint_path: str = "classify_checkpoint.json",
+    checkpoint_path: Optional[str] = None,
     resume: bool = True,
     apply_heuristics: bool = True,
     confidence_flag_threshold: Optional[str] = "Medium",
 ) -> None:
     """
     Classify emails from a CSV in batches and append results to a new CSV.
+    Input/output and checkpoints default to paths under the data/ folder.
     """
+    if input_csv is None:
+        input_csv = data_path("emails_review.csv")
+    if output_csv is None:
+        output_csv = data_path("classified_emails.csv")
+    if checkpoint_path is None:
+        checkpoint_path = data_path("classify_checkpoint.json")
     checkpoint = _load_checkpoint(checkpoint_path) if resume else {}
     start_chunk = checkpoint.get("next_chunk_index", 0)
     processed_rows = checkpoint.get("processed_rows", 0)

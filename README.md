@@ -55,6 +55,8 @@ To force a specific device (e.g. if auto-detection is wrong):
 
 Use the Jupyter notebook `email_filter_agent_test.ipynb` to export emails, run the classification pipeline, and (optionally) delete emails from your inbox.
 
+**Data folder:** Exports and generated files (CSVs, checkpoints) are stored under **`data/`**, not in the repo root. The folder is created automatically. `data/` is in `.gitignore` so generated data is not committed.
+
 **Export defaults:** New exports use `in:inbox` (so Sent/Drafts are not included) and skip messages where the sender is your own Gmail address. To include sent mail or all mail, call `export_emails_paginated(..., inbox_only=False, exclude_self=False)`.
 
 **Decision column:** The pipeline fills `suggested_decision` (DELETE / KEEP / REVIEW) from the classifier. Fill the `decision` column yourself (e.g. set to `DELETE` for emails to trash), then run `delete_emails_from_csv()`. You can copy `suggested_decision` into `decision` and then edit.

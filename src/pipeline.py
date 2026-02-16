@@ -49,8 +49,8 @@ def _save_checkpoint(checkpoint_path: str, payload: Dict[str, Any]) -> None:
 
 
 def _apply_heuristics(df: pd.DataFrame) -> pd.DataFrame:
-    subject = df["Subject"].astype(str).str.lower()
-    sender = df["Sender"].astype(str).str.lower()
+    subject = df["subject"].astype(str).str.lower()
+    sender = df["sender"].astype(str).str.lower()
 
     subject_match = subject.apply(lambda text: any(k in text for k in PROMO_SUBJECT_KEYWORDS))
     sender_match = sender.apply(lambda text: any(k in text for k in PROMO_SENDER_KEYWORDS))
@@ -67,7 +67,18 @@ def _flag_low_confidence(df: pd.DataFrame, threshold: str) -> pd.DataFrame:
     if threshold_rank is None:
         return df
     confidence_rank = df["confidence"].astype(str).str.lower().map(CONFIDENCE_RANK)
-    df["Needs_Review"] = confidence_rank.fillna(0) <= threshold_rank
+    df["needs_review"] = confidence_rank.fillna(0) <= threshold_rank
+    return df
+
+
+def _add_suggested_decision(df: pd.DataFrame) -> pd.DataFrame:
+    """Set suggested_decision from important/confidence: DELETE, KEEP, or REVIEW."""
+    important = df["important"].astype(str).str.strip().str.lower()
+    confidence = df["confidence"].astype(str).str.strip().str.lower()
+    suggested = pd.Series("REVIEW", index=df.index)
+    suggested[(important == "no") & (confidence == "high")] = "DELETE"
+    suggested[important == "yes"] = "KEEP"
+    df["suggested_decision"] = suggested
     return df
 
 
@@ -99,17 +110,24 @@ async def classify_csv_in_batches(
         if apply_heuristics:
             chunk = _apply_heuristics(chunk)
 
-        needs_llm = chunk["important"].astype(str).str.strip() == ""
+        # Use LLM when: no classification yet, or classification was from heuristics,
+        # or confidence is low/medium (so we want a more certain LLM answer).
+        empty = chunk["important"].astype(str).str.strip() == ""
+        from_heuristic = chunk["reason"].astype(str).str.contains("Heuristic", case=False, na=False)
+        confidence_rank = chunk["confidence"].astype(str).str.lower().map(CONFIDENCE_RANK)
+        low_or_medium_confidence = confidence_rank.notna() & (confidence_rank <= CONFIDENCE_RANK["medium"])
+        needs_llm = empty | from_heuristic | low_or_medium_confidence
         if needs_llm.any():
-            llm_input = chunk[needs_llm][["Subject", "Sender"]].copy()
+            llm_input = chunk.loc[needs_llm, ["subject", "sender"]].copy()
             llm_result = await agent.run(llm_input)
-            chunk.loc[needs_llm, ["important", "reason", "confidence"]] = llm_result[
-                ["important", "reason", "confidence"]
-            ].values
+            # Assign by index so pandas aligns llm_result rows with chunk.loc[needs_llm]
+            cols = ["important", "reason", "confidence"]
+            chunk.loc[needs_llm, cols] = llm_result[cols]
 
         if confidence_flag_threshold:
             chunk = _flag_low_confidence(chunk, confidence_flag_threshold)
 
+        chunk = _add_suggested_decision(chunk)
         _append_dataframe_to_csv(chunk, output_csv)
         processed_rows += len(chunk)
 

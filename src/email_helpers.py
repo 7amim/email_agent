@@ -1,3 +1,4 @@
+from datetime import datetime, timezone
 from typing import List, Dict, Any, Iterable, Optional, Tuple, Union
 import json
 import os
@@ -195,12 +196,29 @@ def _save_checkpoint(checkpoint_path: str, payload: Dict[str, Any]) -> None:
         json.dump(payload, handle, indent=2)
 
 
+def _format_sent_timestamp(
+    date_header: Optional[str], internal_date_ms: Optional[Union[str, int]]
+) -> str:
+    """Format email sent timestamp: use Date header if present, else internalDate (epoch ms)."""
+    if date_header and str(date_header).strip():
+        return str(date_header).strip()
+    if internal_date_ms is not None:
+        try:
+            ms = int(internal_date_ms)
+            sec = ms / 1000.0
+            return datetime.fromtimestamp(sec, tz=timezone.utc).strftime("%Y-%m-%d %H:%M:%S UTC")
+        except (ValueError, OSError):
+            return str(internal_date_ms)
+    return ""
+
+
 def export_emails(
     service: Resource,
     emails: Iterable[Union[Dict[str, Any], str]],
     filename: str = "emails_review.csv",
     append: bool = False,
     include_review_columns: bool = True,
+    exclude_sender_emails: Optional[List[str]] = None,
 ) -> None:
     """
     Fetch email metadata and create a labeled dataset for manual review.
@@ -215,13 +233,15 @@ def export_emails(
         filename (str): Name of the CSV file in which parsed results will be stored.
         append (bool): Append to existing CSV instead of overwriting.
         include_review_columns (bool): Add review columns (important/reason/etc) as blanks.
+        exclude_sender_emails (list[str], optional): Do not export rows where From contains
+            any of these addresses (e.g. your own email to exclude sent mail).
 
     Returns:
-        None: Results are written directly to a CSV, with the number of exported
-            emails printed to the console.
+        int: Number of rows written to the CSV.
     """
     email_data: List[Dict[str, Any]] = []
     message_ids = _normalize_message_ids(emails)
+    exclude_lower = [e.strip().lower() for e in (exclude_sender_emails or []) if e]
 
     for msg_id in message_ids:
         msg = service.users().messages().get(userId="me", id=msg_id).execute()
@@ -229,19 +249,38 @@ def export_emails(
 
         subject = headers.get("Subject", "")
         sender = headers.get("From", "")
+        if exclude_lower and sender and any(ex in sender.lower() for ex in exclude_lower):
+            continue
+        date_sent = _format_sent_timestamp(headers.get("Date"), msg.get("internalDate"))
 
-        row = {"Message_ID": msg_id, "Subject": subject, "Sender": sender}
+        row = {
+            "message_id": msg_id,
+            "subject": subject,
+            "sender": sender,
+            "date_sent": date_sent,
+        }
         email_data.append(row)
 
     df = pd.DataFrame(email_data)
     if include_review_columns:
         df = _ensure_review_columns(df)
 
+    n = len(df)
     if append:
         _append_dataframe_to_csv(df, filename)
     else:
         df.to_csv(filename, index=False)
-    print(f"Exported {len(df)} emails to {filename}")
+    print(f"Exported {n} emails to {filename}")
+    return n
+
+
+def _get_user_email(service: Resource) -> Optional[str]:
+    """Return the authenticated user's Gmail address, or None on error."""
+    try:
+        profile = service.users().getProfile(userId="me").execute()
+        return (profile.get("emailAddress") or "").strip() or None
+    except Exception:
+        return None
 
 
 def export_emails_paginated(
@@ -252,10 +291,24 @@ def export_emails_paginated(
     page_size: int = 500,
     checkpoint_path: str = "export_checkpoint.json",
     resume: bool = True,
+    inbox_only: bool = True,
+    exclude_self: bool = True,
 ) -> None:
     """
     Export emails to CSV using Gmail pagination with checkpoint/resume support.
+
+    By default only inbox messages are exported (no Sent/Drafts/etc.) and emails
+    from yourself are excluded.
     """
+    if inbox_only:
+        base = (query or "").strip()
+        query = f"in:inbox {base}".strip() if base else "in:inbox"
+    exclude_sender_emails: Optional[List[str]] = None
+    if exclude_self:
+        user_email = _get_user_email(service)
+        if user_email:
+            exclude_sender_emails = [user_email]
+
     checkpoint = _load_checkpoint(checkpoint_path) if resume else {}
     page_token = checkpoint.get("next_page_token")
     exported = checkpoint.get("exported", 0)
@@ -275,8 +328,14 @@ def export_emails_paginated(
         if not messages:
             break
 
-        export_emails(service, messages, filename=filename, append=os.path.exists(filename))
-        exported += len(messages)
+        n_written = export_emails(
+            service,
+            messages,
+            filename=filename,
+            append=os.path.exists(filename),
+            exclude_sender_emails=exclude_sender_emails,
+        )
+        exported += n_written
 
         _save_checkpoint(
             checkpoint_path,
@@ -291,7 +350,7 @@ def export_emails_paginated(
 def delete_emails_from_csv(
     service: Resource,
     df: Union[pd.DataFrame, str],
-    decision_column: str = "Decision",
+    decision_column: str = "decision",
     decision_value: str = "DELETE",
     dry_run: bool = False,
 ) -> None:
@@ -324,15 +383,15 @@ def delete_emails_from_csv(
     print(f"Found {len(to_delete)} emails marked for deletion.")
 
     for _, row in to_delete.iterrows():
-        msg_id = row.get("Message_ID")
+        msg_id = row.get("message_id")
 
         if pd.isna(msg_id):
             continue
         if dry_run:
-            print(f"[DRY RUN] Would delete email: {row.get('Subject')} from {row.get('Sender')}")
+            print(f"[DRY RUN] Would delete email: {row.get('subject')} from {row.get('sender')}")
             continue
         try:
             service.users().messages().trash(userId="me", id=msg_id).execute()
-            print(f"Deleted email: {row.get('Subject')} from {row.get('Sender')}")
+            print(f"Deleted email: {row.get('subject')} from {row.get('sender')}")
         except Exception as e:
-            print(f"Error deleting {row.get('Subject')}: {e}")
+            print(f"Error deleting {row.get('subject')}: {e}")

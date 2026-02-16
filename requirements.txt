@@ -1,0 +1,12 @@
+# Base dependencies (MacBook Air M4, or PC without GPU)
+pandas>=2.0.0
+tqdm>=4.65.0
+gpt4all>=2.0.0
+google-api-python-client>=2.100.0
+google-auth-oauthlib>=1.1.0
+google-auth-httplib2>=0.1.1
+
+# --- PC with NVIDIA GPU (e.g. RTX 3080) ---
+# Install CUDA-enabled GPT4All for GPU inference on desktop:
+#   pip install "gpt4all[cuda]"
+# Ensure NVIDIA drivers and CUDA toolkit are installed on your PC.

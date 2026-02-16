@@ -7,14 +7,17 @@ REGEX_PATTERN = (
         )
 
 REVIEW_CSV_COLUMNS = [
-    "Message_ID",
-    "Subject",
-    "Sender",
+    "message_id",
+    "subject",
+    "sender",
+    "date_sent",
     "important",
     "reason",
     "confidence",
-    "Decision",
-    "Notes",
+    "needs_review",
+    "suggested_decision",
+    "decision",
+    "notes",
 ]
 
 CONFIDENCE_RANK = {"low": 1, "medium": 2, "high": 3}

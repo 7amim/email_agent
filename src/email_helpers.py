@@ -1,10 +1,13 @@
-from typing import List, Dict, Any
+from typing import List, Dict, Any, Iterable, Optional, Tuple, Union
+import json
 import os
 import pandas as pd
 from googleapiclient.discovery import build, Resource
 from google.oauth2.credentials import Credentials
 from google_auth_oauthlib.flow import InstalledAppFlow
 from google.auth.transport.requests import Request
+
+from src.constants import REVIEW_CSV_COLUMNS
 
 SCOPES = ["https://www.googleapis.com/auth/gmail.modify"]
 
@@ -43,7 +46,92 @@ def get_gmail_service(token_path: str = "token.json", creds_path: str = "credent
     return build("gmail", "v1", credentials=creds)
 
 
-def fetch_emails(service: Resource, max_results: int = 100) -> List[Dict[str, Any]]:
+def list_message_ids(
+    service: Resource,
+    max_results: int = 100,
+    query: Optional[str] = None,
+    page_token: Optional[str] = None,
+    include_spam_trash: bool = False,
+) -> Tuple[List[Dict[str, Any]], Optional[str]]:
+    """
+    Fetch a single page of Gmail message IDs, optionally filtered by a query.
+
+    Args:
+        service (Resource): An authenticated Gmail API service instance.
+        max_results (int): Maximum number of email message entries to return.
+        query (str, optional): Gmail search query string (e.g., "newer_than:30d").
+        page_token (str, optional): Gmail page token for pagination.
+        include_spam_trash (bool): Whether to include Spam/Trash in results.
+
+    Returns:
+        tuple[list[dict], str | None]: A list of message objects and the next page token.
+    """
+    results = (
+        service.users()
+        .messages()
+        .list(
+            userId="me",
+            maxResults=max_results,
+            q=query,
+            pageToken=page_token,
+            includeSpamTrash=include_spam_trash,
+        )
+        .execute()
+    )
+    return results.get("messages", []), results.get("nextPageToken")
+
+
+def fetch_all_message_ids(
+    service: Resource,
+    total_limit: Optional[int] = None,
+    page_size: int = 500,
+    query: Optional[str] = None,
+    include_spam_trash: bool = False,
+) -> List[Dict[str, Any]]:
+    """
+    Fetch all Gmail message IDs using pagination.
+
+    Args:
+        service (Resource): An authenticated Gmail API service instance.
+        total_limit (int, optional): Stop after this many messages.
+        page_size (int): Page size for Gmail API pagination.
+        query (str, optional): Gmail search query string.
+        include_spam_trash (bool): Whether to include Spam/Trash in results.
+
+    Returns:
+        list[dict]: A list of Gmail message objects containing `"id"` values.
+    """
+    all_messages: List[Dict[str, Any]] = []
+    page_token: Optional[str] = None
+
+    while True:
+        remaining = None if total_limit is None else max(total_limit - len(all_messages), 0)
+        if remaining == 0:
+            break
+        page_max = page_size if remaining is None else min(page_size, remaining)
+
+        messages, page_token = list_message_ids(
+            service,
+            max_results=page_max,
+            query=query,
+            page_token=page_token,
+            include_spam_trash=include_spam_trash,
+        )
+        all_messages.extend(messages)
+
+        if not page_token or not messages:
+            break
+
+    return all_messages
+
+
+def fetch_emails(
+    service: Resource,
+    max_results: int = 100,
+    query: Optional[str] = None,
+    page_token: Optional[str] = None,
+    include_spam_trash: bool = False,
+) -> List[Dict[str, Any]]:
     """
     Fetch a batch of email metadata from the authenticated Gmail inbox.
 
@@ -53,16 +141,67 @@ def fetch_emails(service: Resource, max_results: int = 100) -> List[Dict[str, An
     Args:
         service (Resource): An authenticated Gmail API service instance.
         max_results (int): Maximum number of email message entries to return.
+        query (str, optional): Gmail search query string (e.g., "newer_than:30d").
+        page_token (str, optional): Gmail page token for pagination.
+        include_spam_trash (bool): Whether to include Spam/Trash in results.
 
     Returns:
         list[dict]: A list of Gmail message objects containing `"id"` values
             for each email retrieved.
     """
-    results = service.users().messages().list(userId="me", maxResults=max_results).execute()
-    return results.get("messages", [])
+    messages, _ = list_message_ids(
+        service,
+        max_results=max_results,
+        query=query,
+        page_token=page_token,
+        include_spam_trash=include_spam_trash,
+    )
+    return messages
 
 
-def export_emails(service: Resource, emails: List[Dict[str, Any]], filename: str = "emails_review.csv") -> None:
+def _normalize_message_ids(emails: Iterable[Union[Dict[str, Any], str]]) -> List[str]:
+    message_ids: List[str] = []
+    for item in emails:
+        if isinstance(item, str):
+            message_ids.append(item)
+        elif isinstance(item, dict) and "id" in item:
+            message_ids.append(item["id"])
+    return message_ids
+
+
+def _ensure_review_columns(df: pd.DataFrame) -> pd.DataFrame:
+    for column in REVIEW_CSV_COLUMNS:
+        if column not in df.columns:
+            df[column] = ""
+    return df
+
+
+def _append_dataframe_to_csv(df: pd.DataFrame, filename: str) -> None:
+    file_exists = os.path.exists(filename)
+    df.to_csv(filename, index=False, mode="a" if file_exists else "w", header=not file_exists)
+
+
+def _load_checkpoint(checkpoint_path: str) -> Dict[str, Any]:
+    if not checkpoint_path or not os.path.exists(checkpoint_path):
+        return {}
+    with open(checkpoint_path, "r") as handle:
+        return json.load(handle)
+
+
+def _save_checkpoint(checkpoint_path: str, payload: Dict[str, Any]) -> None:
+    if not checkpoint_path:
+        return
+    with open(checkpoint_path, "w") as handle:
+        json.dump(payload, handle, indent=2)
+
+
+def export_emails(
+    service: Resource,
+    emails: Iterable[Union[Dict[str, Any], str]],
+    filename: str = "emails_review.csv",
+    append: bool = False,
+    include_review_columns: bool = True,
+) -> None:
     """
     Fetch email metadata and create a labeled dataset for manual review.
 
@@ -72,36 +211,92 @@ def export_emails(service: Resource, emails: List[Dict[str, Any]], filename: str
 
     Args:
         service (Resource): Authenticated Gmail API client.
-        emails (list[dict]): List of Gmail message objects where each item contains `"id"`.
+        emails (list[dict] | list[str]): List of Gmail message objects or message IDs.
         filename (str): Name of the CSV file in which parsed results will be stored.
+        append (bool): Append to existing CSV instead of overwriting.
+        include_review_columns (bool): Add review columns (important/reason/etc) as blanks.
 
     Returns:
         None: Results are written directly to a CSV, with the number of exported
             emails printed to the console.
     """
-    email_data = []
+    email_data: List[Dict[str, Any]] = []
+    message_ids = _normalize_message_ids(emails)
 
-    for e in emails:
-        msg = service.users().messages().get(userId="me", id=e["id"]).execute()
+    for msg_id in message_ids:
+        msg = service.users().messages().get(userId="me", id=msg_id).execute()
         headers = {h["name"]: h["value"] for h in msg["payload"]["headers"]}
 
         subject = headers.get("Subject", "")
         sender = headers.get("From", "")
 
-        email_data.append({
-            "Message_ID": e["id"],
-            "Subject": subject,
-            "Sender": sender
-        })
+        row = {"Message_ID": msg_id, "Subject": subject, "Sender": sender}
+        email_data.append(row)
 
     df = pd.DataFrame(email_data)
-    df.to_csv(filename, index=False)
+    if include_review_columns:
+        df = _ensure_review_columns(df)
+
+    if append:
+        _append_dataframe_to_csv(df, filename)
+    else:
+        df.to_csv(filename, index=False)
     print(f"Exported {len(df)} emails to {filename}")
 
 
-def delete_emails_from_csv(service: Resource, df: pd.DataFrame) -> None:
+def export_emails_paginated(
+    service: Resource,
+    filename: str = "emails_review.csv",
+    query: Optional[str] = None,
+    total_limit: Optional[int] = None,
+    page_size: int = 500,
+    checkpoint_path: str = "export_checkpoint.json",
+    resume: bool = True,
+) -> None:
     """
-    Remove emails permanently from Gmail that have been labeled for deletion.
+    Export emails to CSV using Gmail pagination with checkpoint/resume support.
+    """
+    checkpoint = _load_checkpoint(checkpoint_path) if resume else {}
+    page_token = checkpoint.get("next_page_token")
+    exported = checkpoint.get("exported", 0)
+
+    while True:
+        remaining = None if total_limit is None else max(total_limit - exported, 0)
+        if remaining == 0:
+            break
+        page_max = page_size if remaining is None else min(page_size, remaining)
+
+        messages, next_token = list_message_ids(
+            service,
+            max_results=page_max,
+            query=query,
+            page_token=page_token,
+        )
+        if not messages:
+            break
+
+        export_emails(service, messages, filename=filename, append=os.path.exists(filename))
+        exported += len(messages)
+
+        _save_checkpoint(
+            checkpoint_path,
+            {"next_page_token": next_token, "exported": exported, "query": query},
+        )
+
+        if not next_token:
+            break
+        page_token = next_token
+
+
+def delete_emails_from_csv(
+    service: Resource,
+    df: Union[pd.DataFrame, str],
+    decision_column: str = "Decision",
+    decision_value: str = "DELETE",
+    dry_run: bool = False,
+) -> None:
+    """
+    Move emails to Gmail Trash that have been labeled for deletion.
 
     This function looks for entries in the DataFrame where the decision equals
     `"DELETE"`, then attempts to delete each corresponding message ID.
@@ -109,13 +304,23 @@ def delete_emails_from_csv(service: Resource, df: pd.DataFrame) -> None:
 
     Args:
         service (Resource): Gmail API client used to delete emails.
-        df (pd.DataFrame): A table of labeled messages, containing columns:
-            `"Message_ID"`, `"Subject"`, `"Sender"`, and `"Decision"`.
+        df (pd.DataFrame | str): Labeled messages or path to the review CSV.
+        decision_column (str): Column to check for delete decisions.
+        decision_value (str): Value that triggers trashing (case-insensitive).
+        dry_run (bool): If True, do not modify Gmail.
 
     Returns:
-        None: Emails are deleted in Gmail as side effects, with status logs printed.
+        None: Emails are moved to Trash in Gmail as side effects, with status logs printed.
     """
-    to_delete = df[df["Decision"].str.upper() == "DELETE"]
+    if isinstance(df, str):
+        df = pd.read_csv(df)
+
+    if decision_column not in df.columns:
+        print(f"Missing '{decision_column}' column. Nothing to delete.")
+        return
+
+    normalized = df[decision_column].astype(str).str.upper()
+    to_delete = df[normalized == decision_value.upper()]
     print(f"Found {len(to_delete)} emails marked for deletion.")
 
     for _, row in to_delete.iterrows():
@@ -123,8 +328,11 @@ def delete_emails_from_csv(service: Resource, df: pd.DataFrame) -> None:
 
         if pd.isna(msg_id):
             continue
+        if dry_run:
+            print(f"[DRY RUN] Would delete email: {row.get('Subject')} from {row.get('Sender')}")
+            continue
         try:
             service.users().messages().trash(userId="me", id=msg_id).execute()
-            print(f"Deleted email: {row['Subject']} from {row['Sender']}")
+            print(f"Deleted email: {row.get('Subject')} from {row.get('Sender')}")
         except Exception as e:
-            print(f"Error deleting {row['Subject']}: {e}")
+            print(f"Error deleting {row.get('Subject')}: {e}")

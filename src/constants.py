@@ -5,3 +5,16 @@ REGEX_PATTERN = (
         r"(?:\n)+REASON\s*:\s*(?P<reason>.+?)\s*"
         r"(?:\n)+CONFIDENCE\s*:\s*(?P<confidence>[A-Za-z]+)"
         )
+
+REVIEW_CSV_COLUMNS = [
+    "Message_ID",
+    "Subject",
+    "Sender",
+    "important",
+    "reason",
+    "confidence",
+    "Decision",
+    "Notes",
+]
+
+CONFIDENCE_RANK = {"low": 1, "medium": 2, "high": 3}
